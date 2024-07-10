@@ -42,4 +42,45 @@ int main(){
     signal(SIGINT, handler);
 
     char *bg_processes[10]; 
+
+    for(;;){
+        printf("minibash$ ");
+        fgets(command, MAX_COMMAND_LENGTH, stdin);
+
+        command[strcspn(command, "\n")] = 0;
+
+        if (command[0] == '#') {
+            // Extract the filename
+            char *filename = command + 2; // Skip the "# " part
+            //printf("\nFile name %s ",filename);
+                        while (*filename == ' ') {
+                filename++;
+            }
+            // Create a child process
+            pid_t pid = fork();
+
+            if (pid == -1) {
+                // Fork failed
+                perror("fork failed");
+                continue;
+            } else if (pid == 0) {
+                // Child process
+                // Execute the wc -w command
+                execlp("wc", "wc", "-w", filename, NULL);
+                // If execlp fails
+                perror("execlp failed");
+                exit(EXIT_FAILURE);
+            } else {
+                // Parent process
+                // Wait for the child process to complete
+                int status;
+                waitpid(pid, &status, 0);
+            }
+        } else {
+            printf("Unknown command: %s\n", command);
+        }
+
+
+
+    }
 }
