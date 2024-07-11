@@ -41,36 +41,16 @@ void concatenate_files(char *files[], int file_count) {
             perror("fopen failed");
             continue;
         }
-        char ch;
-        while ((ch = fgetc(file)) != EOF) {
-            putchar(ch);
+        char buffer[BUFFER_SIZE];
+        size_t n;
+        while ((n = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+            fwrite(buffer, 1, n, stdout);
         }
         fclose(file);
     }
 }
 
-char* trim_whitespace(char *str) {
-    // Trim leading spaces
-    while (isspace((unsigned char)*str)) {
-        str++;
-    }
 
-    // If all spaces, return empty string
-    if (*str == 0) {
-        return str;
-    }
-
-    // Trim trailing spaces
-    char *end = str + strlen(str) - 1;
-    while (end > str && isspace((unsigned char)*end)) {
-        end--;
-    }
-
-    // Write new null terminator
-    end[1] = '\0';
-
-    return str;
-}
 
 void add_pid_to_file(pid_t pid) {
     FILE *file = fopen(PID_FILE, "a");
@@ -154,6 +134,26 @@ int main() {
         } else if (strcmp(command, "dtex") == 0) {
             kill_all_minibash();
             exit(EXIT_SUCCESS);
+        } else if (strcmp(command, "addmb") == 0) {
+            // Create a new minibash process
+            pid_t pid = fork();
+
+            if (pid == -1) {
+                // Fork failed
+                perror("fork failed");
+                continue;
+            } else if (pid == 0) {
+                // Child process
+                execlp("./ra3", "ra3", NULL); // Assuming minibash executable is in the current directory
+                // If execlp fails
+                perror("execlp failed");
+                exit(EXIT_FAILURE);
+            } else {
+                // Parent process
+                // Wait for the child process to complete
+                int status;
+                waitpid(pid, &status, 0);
+            }
         } else if (command[0] == '#') {
             // Extract the filename
             char *filename = trim_whitespace(command + 1);  // Skip the "#"
@@ -173,45 +173,6 @@ int main() {
                 // If execlp fails
                 perror("execlp failed");
                 exit(EXIT_FAILURE);
-            } else {
-                // Parent process
-                // Wait for the child process to complete
-                int status;
-                waitpid(pid, &status, 0);
-            }
-        } else if (command[0] == '~') {
-            // Handle file concatenation command
-            char *files[MAX_FILES];
-            int file_count = 0;
-
-            // Extract the filenames
-            char *filenames = trim_whitespace(command + 1);  // Skip the "~"
-            printf("\nFilenames: '%s'\n", filenames);
-
-            // Tokenize the command based on the '~' delimiter
-            char *token = strtok(filenames, "~");
-            while (token != NULL && file_count < MAX_FILES) {
-                // Trim leading and trailing spaces
-                files[file_count++] = trim_whitespace(token);
-                token = strtok(NULL, "~");
-            }
-
-            // Debugging output
-            for (int i = 0; i < file_count; i++) {
-                printf("File name: '%s'\n", files[i]);
-            }
-
-            // Create a child process
-            pid_t pid = fork();
-
-            if (pid == -1) {
-                // Fork failed
-                perror("fork failed");
-                continue;
-            } else if (pid == 0) {
-                // Child process
-                concatenate_files(files, file_count);
-                exit(EXIT_SUCCESS);
             } else {
                 // Parent process
                 // Wait for the child process to complete
