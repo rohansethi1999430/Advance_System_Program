@@ -1,155 +1,273 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <string.h>
 #include <sys/wait.h>
+#include <errno.h>
+#include <signal.h>
+#include <string.h>
+#include <ctype.h>
 #include <fcntl.h>
+#include <glob.h>
 
-#define MAX_ARGS 10
-#define MAX_PIPES 4
+#define MAX_COMMAND_LENGTH 1000
+#define BUFFER_SIZE 1024
+#define MAX_TOKENS 10
+#define MAX_BG_PROCESSES 10
+#define MAX_FILES 4
+#define PID_FILE "/tmp/minibash_pids.txt"
 
-void execute_command(char *command);
-void handle_special_characters(char *command);
-void handle_dter();
-void handle_dtex();
-void handle_addmb();
-void handle_count_words(char *filename);
-void handle_concatenate_files(char *command);
-void handle_background(char **args);
-void handle_pipe(char *command);
-void handle_redirection(char *command);
-void handle_sequential(char *command);
-void handle_conditional(char *command, int mode);
+int num_bg_processes = 0;
+pid_t bg_process_pids[MAX_BG_PROCESSES];
 
-int main() {
-    char command[256];
+void handler(int signo) 
+{
+    // Check if there are any background processes running
+    if (num_bg_processes > 0)
+    {
+        // Kill the last background process and decrement the counter
+        kill(bg_process_pids[num_bg_processes - 1], SIGKILL);
+        num_bg_processes--;
+    }
+    else
+    {
+        // If no background processes are running, exit the program
+        exit(EXIT_SUCCESS);
+    }
+}
 
-    while (1) {
-        printf("minibash$ ");
-        if (fgets(command, sizeof(command), stdin) == NULL) {
-            perror("fgets");
+void concatenate_files(char *files[], int file_count) {
+    for (int i = 0; i < file_count; i++) {
+        FILE *file = fopen(files[i], "r");
+        if (file == NULL) {
+            perror("fopen failed");
+            continue;
+        }
+        char buffer[BUFFER_SIZE];
+        size_t n;
+        while ((n = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+            fwrite(buffer, 1, n, stdout);
+        }
+        fclose(file);
+    }
+}
+
+void add_pid_to_file(pid_t pid) {
+    FILE *file = fopen(PID_FILE, "a");
+    if (file == NULL) {
+        perror("fopen failed");
+        return;
+    }
+    fprintf(file, "%d\n", pid);
+    fclose(file);
+}
+
+void remove_pid_from_file(pid_t pid) {
+    FILE *file = fopen(PID_FILE, "r");
+    if (file == NULL) {
+        perror("fopen failed");
+        return;
+    }
+
+    FILE *temp_file = fopen("/tmp/temp_pids.txt", "w");
+    if (temp_file == NULL) {
+        perror("fopen failed");
+        fclose(file);
+        return;
+    }
+
+    int current_pid;
+    while (fscanf(file, "%d", &current_pid) != EOF) {
+        if (current_pid != pid) {
+            fprintf(temp_file, "%d\n", current_pid);
+        }
+    }
+
+    fclose(file);
+    fclose(temp_file);
+
+    remove(PID_FILE);
+    rename("/tmp/temp_pids.txt", PID_FILE);
+}
+
+void kill_all_minibash() {
+    FILE *file = fopen(PID_FILE, "r");
+    if (file == NULL) {
+        perror("fopen failed");
+        return;
+    }
+
+    int pid;
+    while (fscanf(file, "%d", &pid) != EOF) {
+        kill(pid, SIGKILL);
+    }
+
+    fclose(file);
+    remove(PID_FILE);
+}
+
+char *trim_whitespace(char *str) {
+    char *end;
+
+    // Trim leading space
+    while (isspace((unsigned char) *str)) str++;
+
+    if (*str == 0) { // All spaces?
+        return str;
+    }
+
+    // Trim trailing space
+    end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char) *end)) end--;
+
+    // Write new null terminator
+    *(end + 1) = 0;
+
+    return str;
+}
+
+void split_command(char *command, char **args, int *argc) {
+    char *token;
+    *argc = 0;
+
+    token = strtok(command, " ");
+    while (token != NULL && *argc < MAX_TOKENS - 1) {
+        args[(*argc)++] = token;
+        token = strtok(NULL, " ");
+    }
+    args[*argc] = NULL;
+}
+
+void handle_concatenate_command(char *command) {
+    char *token;
+    char *files[MAX_FILES];
+    int file_count = 0;
+
+    // Tokenize the command based on the '~' character
+    token = strtok(command, "~");
+    while (token != NULL && file_count < MAX_FILES) {
+        files[file_count++] = trim_whitespace(token);
+        token = strtok(NULL, "~");
+    }
+
+    if (file_count > 1) {
+        concatenate_files(files, file_count);
+    } else {
+        fprintf(stderr, "Error: Too few files to concatenate.\n");
+    }
+}
+
+void handle_pipe_command(char *command) {
+    char *commands[MAX_TOKENS];
+    int command_count = 0;
+
+    // Tokenize the command based on the '|' character
+    char *token = strtok(command, "|");
+    while (token != NULL && command_count < MAX_TOKENS) {
+        commands[command_count++] = trim_whitespace(token);
+        token = strtok(NULL, "|");
+    }
+
+    int pipefds[2 * (command_count - 1)];
+    for (int i = 0; i < command_count - 1; i++) {
+        if (pipe(pipefds + i * 2) < 0) {
+            perror("pipe failed");
             exit(EXIT_FAILURE);
         }
-
-        // Remove trailing newline character
-        command[strcspn(command, "\n")] = 0;
-
-        // Exit on 'exit' command
-        if (strcmp(command, "exit") == 0) {
-            break;
-        }
-
-        // Execute command
-        execute_command(command);
     }
 
-    return 0;
-}
+    for (int i = 0; i < command_count; i++) {
+        pid_t pid = fork();
 
-void execute_command(char *command) {
-    // Check for special commands
-    if (strncmp(command, "dter", 4) == 0) {
-        handle_dter();
-    } else if (strncmp(command, "dtex", 4) == 0) {
-        handle_dtex();
-    } else if (strncmp(command, "addmb", 5) == 0) {
-        handle_addmb();
-    } else {
-        // Handle special characters
-        handle_special_characters(command);
-    }
-}
-
-void handle_special_characters(char *command) {
-    if (strchr(command, ';') != NULL) {
-        handle_sequential(command);
-    } else if (strchr(command, '>') != NULL || strchr(command, '<') != NULL) {
-        handle_redirection(command);
-    } else {
-        char *args[MAX_ARGS];
-        int argc = 0;
-        char *token = strtok(command, " ");
-        while (token != NULL && argc < MAX_ARGS - 1) {
-            args[argc++] = token;
-            token = strtok(NULL, " ");
-        }
-        args[argc] = NULL;
-
-        // Handle other special characters
-        if (args[0][0] == '#') {
-            handle_count_words(args[1]);
-        } else if (strchr(command, '~') != NULL) {
-            handle_concatenate_files(command);
-        } else if (strchr(command, '+') != NULL) {
-            handle_background(args);
-        } else if (strchr(command, '|') != NULL) {
-            handle_pipe(command);
-        } else if (strstr(command, "&&") != NULL) {
-            handle_conditional(command, 1);
-        } else if (strstr(command, "||") != NULL) {
-            handle_conditional(command, 0);
-        } else {
-            // General command execution
-            pid_t pid = fork();
-
-            if (pid == -1) {
-                perror("fork");
-                exit(EXIT_FAILURE);
-            } else if (pid == 0) {
-                // In child process
-                if (execvp(args[0], args) == -1) {
-                    perror("execvp");
+        if (pid == -1) {
+            perror("fork failed");
+            exit(EXIT_FAILURE);
+        } else if (pid == 0) {
+            // Set up input from previous command
+            if (i > 0) {
+                if (dup2(pipefds[(i - 1) * 2], STDIN_FILENO) < 0) {
+                    perror("dup2 failed");
                     exit(EXIT_FAILURE);
                 }
-            } else {
-                // In parent process
-                wait(NULL);
+            }
+
+            // Set up output to next command
+            if (i < command_count - 1) {
+                if (dup2(pipefds[i * 2 + 1], STDOUT_FILENO) < 0) {
+                    perror("dup2 failed");
+                    exit(EXIT_FAILURE);
+                }
+            }
+
+            // Close all pipe file descriptors
+            for (int j = 0; j < 2 * (command_count - 1); j++) {
+                close(pipefds[j]);
+            }
+
+            // Execute the command
+            char *args[MAX_TOKENS];
+            int argc = 0;
+            char *arg_token = strtok(commands[i], " ");
+            while (arg_token != NULL && argc < MAX_TOKENS) {
+                args[argc++] = arg_token;
+                arg_token = strtok(NULL, " ");
+            }
+            args[argc] = NULL;
+
+            // Handle wildcard expansion using glob
+            glob_t glob_result;
+            memset(&glob_result, 0, sizeof(glob_result));
+
+            for (int k = 0; k < argc; k++) {
+                if (strchr(args[k], '*') != NULL) {
+                    glob(args[k], GLOB_TILDE, NULL, &glob_result);
+                    for (int l = 0; l < glob_result.gl_pathc; l++) {
+                        args[k] = glob_result.gl_pathv[l];
+                    }
+                }
+            }
+
+            if (execvp(args[0], args) < 0) {
+                perror("execvp failed");
+                exit(EXIT_FAILURE);
             }
         }
     }
-}
 
-void handle_sequential(char *command) {
-    char *cmds[MAX_ARGS];
-    int num_cmds = 0;
-
-    char *token = strtok(command, ";");
-    while (token != NULL && num_cmds < MAX_ARGS) {
-        cmds[num_cmds++] = token;
-        token = strtok(NULL, ";");
+    // Close all pipe file descriptors in the parent process
+    for (int i = 0; i < 2 * (command_count - 1); i++) {
+        close(pipefds[i]);
     }
 
-    for (int i = 0; i < num_cmds; i++) {
-        execute_command(cmds[i]);
+    // Wait for all child processes to complete
+    for (int i = 0; i < command_count; i++) {
+        wait(NULL);
     }
 }
 
 void handle_redirection(char *command) {
-    char *args[MAX_ARGS];
+    char *args[MAX_TOKENS];
     int argc = 0;
-    char *token = strtok(command, " ");
     char *file = NULL;
     int mode = 0; // 0 = no redirection, 1 = output, 2 = append, 3 = input
 
-    while (token != NULL && argc < MAX_ARGS - 1) {
-        if (strcmp(token, ">") == 0) {
-            token = strtok(NULL, " ");
-            file = token;
-            mode = 1;
-        } else if (strcmp(token, ">>") == 0) {
-            token = strtok(NULL, " ");
-            file = token;
-            mode = 2;
-        } else if (strcmp(token, "<") == 0) {
-            token = strtok(NULL, " ");
-            file = token;
-            mode = 3;
-        } else {
-            args[argc++] = token;
-        }
-        token = strtok(NULL, " ");
+    // Detect and split redirection parts
+    char *redir_pos;
+    if ((redir_pos = strstr(command, ">>")) != NULL) {
+        *redir_pos = '\0';
+        file = redir_pos + 2;
+        mode = 2;
+    } else if ((redir_pos = strchr(command, '>')) != NULL) {
+        *redir_pos = '\0';
+        file = redir_pos + 1;
+        mode = 1;
+    } else if ((redir_pos = strchr(command, '<')) != NULL) {
+        *redir_pos = '\0';
+        file = redir_pos + 1;
+        mode = 3;
     }
-    args[argc] = NULL;
+
+    trim_whitespace(file);
+    split_command(command, args, &argc);
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -197,181 +315,275 @@ void handle_redirection(char *command) {
     }
 }
 
-// Remaining function implementations...
+void handle_sequential_command(char *command) {
+    char *commands[MAX_TOKENS];
+    int command_count = 0;
 
-void handle_dter() {
-    printf("Terminating current minibash terminal...\n");
-    exit(0);
-}
-
-void handle_dtex() {
-    printf("Terminating all minibash terminals...\n");
-    exit(0);
-}
-
-void handle_addmb() {
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork");
-    } else if (pid == 0) {
-        // Child process to start a new minibash
-        execlp("./minibash", "minibash", NULL);
-        perror("execlp");
-        exit(EXIT_FAILURE);
-    } else {
-        // Parent process
-        wait(NULL);
-    }
-}
-
-void handle_count_words(char *filename) {
-    if (filename == NULL) {
-        fprintf(stderr, "Error: No filename provided for word count.\n");
-        return;
-    }
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork");
-    } else if (pid == 0) {
-        execlp("wc", "wc", "-w", filename, NULL);
-        perror("execlp");
-        exit(EXIT_FAILURE);
-    } else {
-        wait(NULL);
-    }
-}
-
-void handle_concatenate_files(char *command) {
-    char *files[MAX_ARGS];
-    int argc = 0;
-    char *token = strtok(command, "~");
-
-    while (token != NULL && argc < MAX_ARGS) {
-        files[argc++] = token;
-        token = strtok(NULL, "~");
-    }
-    files[argc] = NULL;
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork");
-    } else if (pid == 0) {
-        execlp("cat", "cat", files[0], files[1], files[2], files[3], NULL);
-        perror("execlp");
-        exit(EXIT_FAILURE);
-    } else {
-        wait(NULL);
-    }
-}
-
-void handle_background(char **args) {
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork");
-    } else if (pid == 0) {
-        // In child process, remove the '+' character
-        for (int i = 0; args[i] != NULL; i++) {
-            if (strcmp(args[i], "+") == 0) {
-                args[i] = NULL;
-                break;
-            }
-        }
-        if (execvp(args[0], args) == -1) {
-            perror("execvp");
-            exit(EXIT_FAILURE);
-        }
-    } else {
-        // In parent process, do not wait for child process
-        printf("Running %s in the background...\n", args[0]);
-    }
-}
-
-void handle_pipe(char *command) {
-    int pipefds[2 * MAX_PIPES];
-    char *cmds[MAX_PIPES + 1];
-    int num_cmds = 0;
-
-    char *token = strtok(command, "|");
-    while (token != NULL && num_cmds < MAX_PIPES + 1) {
-        cmds[num_cmds++] = token;
-        token = strtok(NULL, "|");
+    // Tokenize the command based on the ';' character
+    char *token = strtok(command, ";");
+    while (token != NULL && command_count < MAX_TOKENS) {
+        commands[command_count++] = trim_whitespace(token);
+        token = strtok(NULL, ";");
     }
 
-    for (int i = 0; i < num_cmds - 1; i++) {
-        if (pipe(pipefds + i * 2) < 0) {
-            perror("pipe");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    for (int i = 0; i < num_cmds; i++) {
+    for (int i = 0; i < command_count; i++) {
         pid_t pid = fork();
-        if (pid < 0) {
-            perror("fork");
+
+        if (pid == -1) {
+            perror("fork failed");
             exit(EXIT_FAILURE);
         } else if (pid == 0) {
-            if (i > 0) {
-                if (dup2(pipefds[(i - 1) * 2], STDIN_FILENO) < 0) {
-                    perror("dup2");
-                    exit(EXIT_FAILURE);
-                }
-            }
-
-            if (i < num_cmds - 1) {
-                if (dup2(pipefds[i * 2 + 1], STDOUT_FILENO) < 0) {
-                    perror("dup2");
-                    exit(EXIT_FAILURE);
-                }
-            }
-
-            for (int j = 0; j < 2 * (num_cmds - 1); j++) {
-                close(pipefds[j]);
-            }
-
-            char *cmd_args[MAX_ARGS];
+            // Execute the command
+            char *args[MAX_TOKENS];
             int argc = 0;
-            char *arg_token = strtok(cmds[i], " ");
-            while (arg_token != NULL && argc < MAX_ARGS - 1) {
-                cmd_args[argc++] = arg_token;
+            char *arg_token = strtok(commands[i], " ");
+            while (arg_token != NULL && argc < MAX_TOKENS) {
+                args[argc++] = arg_token;
                 arg_token = strtok(NULL, " ");
             }
-            cmd_args[argc] = NULL;
+            args[argc] = NULL;
 
-            if (execvp(cmd_args[0], cmd_args) < 0) {
-                perror("execvp");
+            if (execvp(args[0], args) < 0) {
+                perror("execvp failed");
                 exit(EXIT_FAILURE);
             }
+        } else {
+            // Parent process waits for the child to complete
+            int status;
+            waitpid(pid, &status, 0);
         }
-    }
-
-    for (int i = 0; i < 2 * (num_cmds - 1); i++) {
-        close(pipefds[i]);
-    }
-
-    for (int i = 0; i < num_cmds; i++) {
-        wait(NULL);
     }
 }
 
-void handle_conditional(char *command, int mode) {
-    char *cmds[2];
-    cmds[0] = strtok(command, mode == 1 ? "&&" : "||");
-    cmds[1] = strtok(NULL, mode == 1 ? "&&" : "||");
+void handle_background_command(char *command) {
+    char *args[MAX_TOKENS];
+    int argc = 0;
+
+    // Remove the '+' symbol from the command
+    char *plus_pos = strchr(command, '+');
+    if (plus_pos != NULL) {
+        *plus_pos = '\0';
+    }
+
+    split_command(command, args, &argc);
 
     pid_t pid = fork();
     if (pid < 0) {
-        perror("fork");
-    } else if (pid == 0) {
-        if (execlp(cmds[0], cmds[0], NULL) < 0) {
-            perror("execlp");
+        perror("fork failed");
+        return;
+    }
+
+    if (pid == 0) {
+        // Child process
+        if (execvp(args[0], args) < 0) {
+            perror("execvp failed");
             exit(EXIT_FAILURE);
         }
     } else {
-        int status;
-        wait(&status);
-        if ((mode == 1 && WIFEXITED(status) && WEXITSTATUS(status) == 0) ||
-            (mode == 0 && WIFEXITED(status) && WEXITSTATUS(status) != 0)) {
-            execute_command(cmds[1]);
+        // Parent process
+        if (num_bg_processes < MAX_BG_PROCESSES) {
+            bg_process_pids[num_bg_processes++] = pid;
+            printf("Process %d running in background\n", pid);
+        } else {
+            fprintf(stderr, "Max background processes reached\n");
         }
     }
+}
+
+void handle_foreground_command() {
+    if (num_bg_processes > 0) {
+        pid_t pid = bg_process_pids[--num_bg_processes];
+        int status;
+        if (waitpid(pid, &status, 0) == -1) {
+            perror("waitpid failed");
+        } else {
+            printf("Process %d brought to foreground\n", pid);
+        }
+    } else {
+        fprintf(stderr, "No background processes to bring to foreground\n");
+    }
+}
+void execute_command(char *command, int *status) {
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork failed");
+        exit(EXIT_FAILURE);
+    } else if (pid == 0) {
+        // Child process
+        char *args[MAX_TOKENS];
+        int argc = 0;
+        char *arg_token = strtok(command, " ");
+        while (arg_token != NULL && argc < MAX_TOKENS) {
+            args[argc++] = arg_token;
+            arg_token = strtok(NULL, " ");
+        }
+        args[argc] = NULL;
+
+        if (execvp(args[0], args) == -1) {
+            perror("execvp failed");
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        // Parent process
+        waitpid(pid, status, 0);
+        if (WIFEXITED(*status)) {
+            *status = WEXITSTATUS(*status);
+        } else {
+            *status = 1; // Treat non-normal exit as failure
+        }
+    }
+}
+
+void handle_and_operator(char **commands, int *index, int *status) {
+    if (*status != 0) {
+        (*index)++;
+    }
+}
+
+void handle_or_operator(char **commands, int *index, int *status) {
+    if (*status == 0) {
+        (*index)++;
+    }
+}
+
+void handle_conditional_command(char *command) {
+    char *commands[MAX_TOKENS];
+    int command_count = 0;
+
+    // Split the command string based on "&&" and "||" while keeping the operators
+    char *token = strtok(command, " ");
+    while (token != NULL && command_count < MAX_TOKENS) {
+        if (strcmp(token, "&&") == 0 || strcmp(token, "||") == 0) {
+            commands[command_count++] = token;
+        } else {
+            char *cmd = malloc(MAX_COMMAND_LENGTH);
+            strcpy(cmd, token);
+            while ((token = strtok(NULL, " ")) != NULL && strcmp(token, "&&") != 0 && strcmp(token, "||") != 0) {
+                strcat(cmd, " ");
+                strcat(cmd, token);
+            }
+            commands[command_count++] = cmd;
+            continue;
+        }
+        token = strtok(NULL, " ");
+    }
+
+    int status = 0;
+    for (int i = 0; i < command_count; i++) {
+        if (strcmp(commands[i], "&&") == 0) {
+            handle_and_operator(commands, &i, &status);
+        } else if (strcmp(commands[i], "||") == 0) {
+            handle_or_operator(commands, &i, &status);
+        } else {
+            execute_command(commands[i], &status);
+        }
+    }
+
+    // Free allocated memory
+    for (int i = 0; i < command_count; i++) {
+        if (commands[i] != NULL && strcmp(commands[i], "&&") != 0 && strcmp(commands[i], "||") != 0) {
+            free(commands[i]);
+        }
+    }
+}
+
+
+int main() {
+    char command[MAX_COMMAND_LENGTH]; // Buffer for user input
+    pid_t my_pid = getpid();
+
+    // Register signal handler for SIGINT (Ctrl+C)
+    signal(SIGINT, handler);
+
+    // Add the current PID to the PID file
+    add_pid_to_file(my_pid);
+
+    char *bg_processes[10];
+
+    for (;;) {
+        printf("minibash$ ");
+        if (fgets(command, MAX_COMMAND_LENGTH, stdin) == NULL) {
+            perror("fgets failed");
+            continue;
+        }
+
+        command[strcspn(command, "\n")] = 0;  // Remove the newline character
+
+        if (strcmp(command, "dter") == 0) {
+            // Remove the current PID from the PID file
+            remove_pid_from_file(my_pid);
+            exit(EXIT_SUCCESS);
+        } else if (strcmp(command, "dtex") == 0) {
+            kill_all_minibash();
+            exit(EXIT_SUCCESS);
+        } else if (command[0] == '#') {
+            // Extract the filename
+            char *filename = trim_whitespace(command + 1);  // Skip the "#"
+            printf("\nFile name: '%s'\n", filename);
+
+            // Create a child process
+            pid_t pid = fork();
+
+            if (pid == -1) {
+                // Fork failed
+                perror("fork failed");
+                continue;
+            } else if (pid == 0) {
+                // Child process
+                // Execute the wc -w command
+                execlp("wc", "wc", "-w", filename, NULL);
+                // If execlp fails
+                perror("execlp failed");
+                exit(EXIT_FAILURE);
+            } else {
+                // Parent process
+                // Wait for the child process to complete
+                int status;
+                waitpid(pid, &status, 0);
+            }
+        } else if (strchr(command, '~') != NULL) {
+            handle_concatenate_command(command);
+        } else if (strchr(command, '|') != NULL) {
+            handle_pipe_command(command);
+        } else if (strchr(command, '>') != NULL || strchr(command, '<') != NULL) {
+            handle_redirection(command);
+        } else if (strchr(command, ';') != NULL) {
+            handle_sequential_command(command);
+        } else if (strchr(command, '+') != NULL) {
+            handle_background_command(command);
+        } else if (strcmp(command, "fore") == 0) {
+            handle_foreground_command();
+        } else if (strstr(command, "&&") != NULL || strstr(command, "||") != NULL) {
+            handle_conditional_command(command);
+        } else {
+            // General command execution
+            pid_t pid = fork();
+
+            if (pid == -1) {
+                perror("fork failed");
+                continue;
+            } else if (pid == 0) {
+                // Tokenize the command into arguments
+                char *args[MAX_TOKENS];
+                int argc = 0;
+                char *arg_token = strtok(command, " ");
+                while (arg_token != NULL && argc < MAX_TOKENS) {
+                    args[argc++] = arg_token;
+                    arg_token = strtok(NULL, " ");
+                }
+                args[argc] = NULL;
+
+                if (execvp(args[0], args) == -1) {
+                    perror("execvp failed");
+                }
+                exit(EXIT_FAILURE);
+            } else {
+                // Parent process waits for the child to complete
+                int status;
+                waitpid(pid, &status, 0);
+            }
+        }
+    }
+
+    return 0;
 }

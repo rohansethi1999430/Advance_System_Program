@@ -7,6 +7,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <fcntl.h>
+#include <glob.h>
 
 #define MAX_COMMAND_LENGTH 1000
 #define BUFFER_SIZE 1024
@@ -49,8 +50,6 @@ void concatenate_files(char *files[], int file_count) {
         fclose(file);
     }
 }
-
-
 
 void add_pid_to_file(pid_t pid) {
     FILE *file = fopen(PID_FILE, "a");
@@ -104,6 +103,133 @@ void kill_all_minibash() {
 
     fclose(file);
     remove(PID_FILE);
+}
+
+char *trim_whitespace(char *str) {
+    char *end;
+
+    // Trim leading space
+    while (isspace((unsigned char) *str)) str++;
+
+    if (*str == 0) { // All spaces?
+        return str;
+    }
+
+    // Trim trailing space
+    end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char) *end)) end--;
+
+    // Write new null terminator
+    *(end + 1) = 0;
+
+    return str;
+}
+
+void handle_concatenate_command(char *command) {
+    char *token;
+    char *files[MAX_FILES];
+    int file_count = 0;
+
+    // Tokenize the command based on the '~' character
+    token = strtok(command, "~");
+    while (token != NULL && file_count < MAX_FILES) {
+        files[file_count++] = trim_whitespace(token);
+        token = strtok(NULL, "~");
+    }
+
+    if (file_count > 1) {
+        concatenate_files(files, file_count);
+    } else {
+        fprintf(stderr, "Error: Too few files to concatenate.\n");
+    }
+}
+
+void handle_pipe_command(char *command) {
+    char *commands[MAX_TOKENS];
+    int command_count = 0;
+
+    // Tokenize the command based on the '|' character
+    char *token = strtok(command, "|");
+    while (token != NULL && command_count < MAX_TOKENS) {
+        commands[command_count++] = trim_whitespace(token);
+        token = strtok(NULL, "|");
+    }
+
+    int pipefds[2 * (command_count - 1)];
+    for (int i = 0; i < command_count - 1; i++) {
+        if (pipe(pipefds + i * 2) < 0) {
+            perror("pipe failed");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    for (int i = 0; i < command_count; i++) {
+        pid_t pid = fork();
+
+        if (pid == -1) {
+            perror("fork failed");
+            exit(EXIT_FAILURE);
+        } else if (pid == 0) {
+            // Set up input from previous command
+            if (i > 0) {
+                if (dup2(pipefds[(i - 1) * 2], STDIN_FILENO) < 0) {
+                    perror("dup2 failed");
+                    exit(EXIT_FAILURE);
+                }
+            }
+
+            // Set up output to next command
+            if (i < command_count - 1) {
+                if (dup2(pipefds[i * 2 + 1], STDOUT_FILENO) < 0) {
+                    perror("dup2 failed");
+                    exit(EXIT_FAILURE);
+                }
+            }
+
+            // Close all pipe file descriptors
+            for (int j = 0; j < 2 * (command_count - 1); j++) {
+                close(pipefds[j]);
+            }
+
+            // Execute the command
+            char *args[MAX_TOKENS];
+            int argc = 0;
+            char *arg_token = strtok(commands[i], " ");
+            while (arg_token != NULL && argc < MAX_TOKENS) {
+                args[argc++] = arg_token;
+                arg_token = strtok(NULL, " ");
+            }
+            args[argc] = NULL;
+
+            // Handle wildcard expansion using glob
+            glob_t glob_result;
+            memset(&glob_result, 0, sizeof(glob_result));
+
+            for (int k = 0; k < argc; k++) {
+                if (strchr(args[k], '*') != NULL) {
+                    glob(args[k], GLOB_TILDE, NULL, &glob_result);
+                    for (int l = 0; l < glob_result.gl_pathc; l++) {
+                        args[k] = glob_result.gl_pathv[l];
+                    }
+                }
+            }
+
+            if (execvp(args[0], args) < 0) {
+                perror("execvp failed");
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+
+    // Close all pipe file descriptors in the parent process
+    for (int i = 0; i < 2 * (command_count - 1); i++) {
+        close(pipefds[i]);
+    }
+
+    // Wait for all child processes to complete
+    for (int i = 0; i < command_count; i++) {
+        wait(NULL);
+    }
 }
 
 int main() {
@@ -179,8 +305,37 @@ int main() {
                 int status;
                 waitpid(pid, &status, 0);
             }
+        } else if (strchr(command, '~') != NULL) {
+            handle_concatenate_command(command);
+        } else if (strchr(command, '|') != NULL) {
+            handle_pipe_command(command);
         } else {
-            printf("Unknown command: %s\n", command);
+            // General command execution
+            pid_t pid = fork();
+
+            if (pid == -1) {
+                perror("fork failed");
+                continue;
+            } else if (pid == 0) {
+                // Tokenize the command into arguments
+                char *args[MAX_TOKENS];
+                int argc = 0;
+                char *arg_token = strtok(command, " ");
+                while (arg_token != NULL && argc < MAX_TOKENS) {
+                    args[argc++] = arg_token;
+                    arg_token = strtok(NULL, " ");
+                }
+                args[argc] = NULL;
+
+                if (execvp(args[0], args) == -1) {
+                    perror("execvp failed");
+                }
+                exit(EXIT_FAILURE);
+            } else {
+                // Parent process waits for the child to complete
+                int status;
+                waitpid(pid, &status, 0);
+            }
         }
     }
 
