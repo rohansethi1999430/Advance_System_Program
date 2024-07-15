@@ -22,58 +22,52 @@ pid_t bg_process_pids[MAX_BG_PROCESSES];
 void handler(int signo) 
 {
     // Check if there are any background processes running
-    if (num_bg_processes > 0)
+    if (num_bg_processes == 0)
+    {
+        // If no background processes are running, exit the program
+        exit(EXIT_SUCCESS);
+    }
+    else
     {
         // Kill the last background process and decrement the counter
         kill(bg_process_pids[num_bg_processes - 1], SIGKILL);
         num_bg_processes--;
     }
-    else
-    {
-        // If no background processes are running, exit the program
-        exit(EXIT_SUCCESS);
-    }
 }
 
 void concatenate_files(char *files[], int file_count) {
-    for (int i = 0; i < file_count; i++) {
-        FILE *file = fopen(files[i], "r");
-        if (file == NULL) {
-            perror("fopen failed");
-            continue;
-        }
-        char buffer[BUFFER_SIZE];
-        size_t n;
-        while ((n = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-            fwrite(buffer, 1, n, stdout);
-        }
-        fclose(file);
+    int i = 0;
+    if (file_count > 0) {
+        do {
+            FILE *file = fopen(files[i], "r");
+            if (file == NULL) {
+                perror("fopen failed");
+            } else {
+                char buffer[BUFFER_SIZE];
+                size_t n;
+                while ((n = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+                    fwrite(buffer, 1, n, stdout);
+                }
+                fclose(file);
+            }
+            i++;
+        } while (i < file_count);
     }
 }
 
 void add_pid_to_file(pid_t pid) {
     FILE *file = fopen(PID_FILE, "a");
-    if (file == NULL) {
+    if (file != NULL) {
+        fprintf(file, "%d\n", pid);
+        fclose(file);
+    } else {
         perror("fopen failed");
-        return;
     }
-    fprintf(file, "%d\n", pid);
-    fclose(file);
 }
 
 void remove_pid_from_file(pid_t pid) {
     FILE *file = fopen(PID_FILE, "r");
-    if (file == NULL) {
-        perror("fopen failed");
-        return;
-    }
-
     FILE *temp_file = fopen("/tmp/temp_pids.txt", "w");
-    if (temp_file == NULL) {
-        perror("fopen failed");
-        fclose(file);
-        return;
-    }
 
     int current_pid;
     while (fscanf(file, "%d", &current_pid) != EOF) {
@@ -81,7 +75,6 @@ void remove_pid_from_file(pid_t pid) {
             fprintf(temp_file, "%d\n", current_pid);
         }
     }
-
     fclose(file);
     fclose(temp_file);
 
@@ -91,10 +84,6 @@ void remove_pid_from_file(pid_t pid) {
 
 void kill_all_minibash() {
     FILE *file = fopen(PID_FILE, "r");
-    if (file == NULL) {
-        perror("fopen failed");
-        return;
-    }
 
     int pid;
     while (fscanf(file, "%d", &pid) != EOF) {
@@ -403,6 +392,7 @@ void handle_foreground_command() {
         fprintf(stderr, "No background processes to bring to foreground\n");
     }
 }
+
 void execute_command(char *command, int *status) {
     pid_t pid = fork();
     if (pid == -1) {
@@ -487,7 +477,6 @@ void handle_conditional_command(char *command) {
     }
 }
 
-
 int main() {
     char command[MAX_COMMAND_LENGTH]; // Buffer for user input
     pid_t my_pid = getpid();
@@ -543,7 +532,9 @@ int main() {
             }
         } else if (strchr(command, '~') != NULL) {
             handle_concatenate_command(command);
-        } else if (strchr(command, '|') != NULL) {
+        }else if (strstr(command, "&&") != NULL || strstr(command, "||") != NULL) {
+            handle_conditional_command(command);
+        }else if (strchr(command, '|') != NULL) {
             handle_pipe_command(command);
         } else if (strchr(command, '>') != NULL || strchr(command, '<') != NULL) {
             handle_redirection(command);
@@ -553,9 +544,7 @@ int main() {
             handle_background_command(command);
         } else if (strcmp(command, "fore") == 0) {
             handle_foreground_command();
-        } else if (strstr(command, "&&") != NULL || strstr(command, "||") != NULL) {
-            handle_conditional_command(command);
-        } else {
+        }  else {
             // General command execution
             pid_t pid = fork();
 
