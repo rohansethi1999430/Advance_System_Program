@@ -15,7 +15,8 @@
 #define MAX_TOKENS 100
 
 // Function prototypes
-void handle_redirection(char **args);
+void handle_redirection(char **args, int *saved_stdin, int *saved_stdout);
+void restore_redirection(int saved_stdin, int saved_stdout);
 void expand_wildcards(char **args, char **expanded_args, int *expanded_argc);
 void handle_background_command(char *command);
 int execute_command(char **args, int background);
@@ -37,9 +38,10 @@ void handle_concatenate_command(char *command);
 
 pid_t bg_process_pids[MAX_BG_PROCESSES];
 int num_bg_processes = 0;
+volatile sig_atomic_t stop = 0;
 
 void handler(int signum) {
-    printf("\nCaught signal %d\n", signum);
+ exit(0);
 }
 
 void add_pid_to_file(pid_t pid) {
@@ -140,63 +142,67 @@ void handle_concatenate_command(char *command) {
     }
 }
 
-void handle_redirection(char **args) {
+void handle_redirection(char **args, int *saved_stdin, int *saved_stdout) {
     int i = 0;
+    *saved_stdin = dup(STDIN_FILENO);
+    *saved_stdout = dup(STDOUT_FILENO);
+    int redirect_in = -1, redirect_out = -1, redirect_append = -1;
+
     while (args[i] != NULL) {
         if (strcmp(args[i], ">") == 0) {
-            int fd = open(args[i + 1], O_CREAT | O_WRONLY | O_TRUNC, 0644);
-            if (fd < 0) {
-                perror("Failed to open file for writing");
-                exit(1);
-            }
-            if (dup2(fd, STDOUT_FILENO) < 0) {
-                perror("Failed to duplicate file descriptor for stdout");
-                exit(1);
-            }
-            close(fd); // Close the original fd after dup2
-            args[i] = NULL; // Remove the redirection part from args
-            args[i + 1] = NULL;
-            break;
+            redirect_out = i;
         } else if (strcmp(args[i], ">>") == 0) {
-            int fd = open(args[i + 1], O_CREAT | O_WRONLY | O_APPEND, 0644);
-            if (fd < 0) {
-                perror("Failed to open file for appending");
-                exit(1);
-            }
-            if (dup2(fd, STDOUT_FILENO) < 0) {
-                perror("Failed to duplicate file descriptor for stdout");
-                exit(1);
-            }
-            close(fd); // Close the original fd after dup2
-            args[i] = NULL; // Remove the redirection part from args
-            args[i + 1] = NULL;
-            break;
+            redirect_append = i;
         } else if (strcmp(args[i], "<") == 0) {
-            int fd = open(args[i + 1], O_RDONLY);
-            if (fd < 0) {
-                perror("Failed to open file for reading");
-                exit(1);
-            }
-            if (dup2(fd, STDIN_FILENO) < 0) {
-                perror("Failed to duplicate file descriptor for stdin");
-                exit(1);
-            }
-            close(fd); // Close the original fd after dup2
-            args[i] = NULL; // Remove the redirection part from args
-            args[i + 1] = NULL;
-            break;
+            redirect_in = i;
         }
         i++;
     }
 
-    // Remove NULLs from args array after handling redirection
-    int j = 0;
-    for (i = 0; args[i] != NULL; i++) {
-        if (args[i] != NULL) {
-            args[j++] = args[i];
+    if (redirect_out != -1) {
+        int fd = open(args[redirect_out + 1], O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        if (fd < 0) {
+            perror("Failed to open file for writing");
+            exit(1);
         }
+        if (dup2(fd, STDOUT_FILENO) < 0) {
+            perror("Failed to duplicate file descriptor for stdout");
+            exit(1);
+        }
+        close(fd);
+        args[redirect_out] = NULL;
+    } else if (redirect_append != -1) {
+        int fd = open(args[redirect_append + 1], O_CREAT | O_WRONLY | O_APPEND, 0644);
+        if (fd < 0) {
+            perror("Failed to open file for appending");
+            exit(1);
+        }
+        if (dup2(fd, STDOUT_FILENO) < 0) {
+            perror("Failed to duplicate file descriptor for stdout");
+            exit(1);
+        }
+        close(fd);
+        args[redirect_append] = NULL;
+    } else if (redirect_in != -1) {
+        int fd = open(args[redirect_in + 1], O_RDONLY);
+        if (fd < 0) {
+            perror("Failed to open file for reading");
+            exit(1);
+        }
+        if (dup2(fd, STDIN_FILENO) < 0) {
+            perror("Failed to duplicate file descriptor for stdin");
+            exit(1);
+        }
+        close(fd);
+        args[redirect_in] = NULL;
     }
-    args[j] = NULL;
+}
+
+void restore_redirection(int saved_stdin, int saved_stdout) {
+    dup2(saved_stdin, STDIN_FILENO);
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdin);
+    close(saved_stdout);
 }
 
 void expand_wildcards(char **args, char **expanded_args, int *expanded_argc) {
@@ -253,11 +259,13 @@ void handle_background_command(char *command) {
 
     if (pid == 0) {
         // Child process
-        handle_redirection(args); // Ensure redirection is handled in the child process
+        int saved_stdin, saved_stdout;
+        handle_redirection(args, &saved_stdin, &saved_stdout); // Ensure redirection is handled in the child process
         if (execvp(args[0], args) < 0) {
             perror("execvp failed");
             exit(EXIT_FAILURE);
         }
+        restore_redirection(saved_stdin, saved_stdout);
     } else {
         // Parent process
         if (num_bg_processes < MAX_BG_PROCESSES) {
@@ -276,7 +284,8 @@ int execute_command(char **args, int background) {
         exit(1);
     } else if (pid == 0) {
         // Child process
-        handle_redirection(args); // Ensure redirection is handled in the child process
+        int saved_stdin, saved_stdout;
+        handle_redirection(args, &saved_stdin, &saved_stdout); // Ensure redirection is handled in the child process
 
         char *expanded_args[MAX_ARG_COUNT];
         int expanded_argc;
@@ -294,6 +303,7 @@ int execute_command(char **args, int background) {
             perror("execvp failed");
             exit(1); // If execvp fails
         }
+        restore_redirection(saved_stdin, saved_stdout);
     } else {
         // Parent process
         if (background) {
@@ -442,8 +452,10 @@ int parse_and_execute(char *input) {
             fprintf(stderr, "No background process to bring to foreground\n");
         }
     } else {
-        handle_redirection(args);
+        int saved_stdin, saved_stdout;
+        handle_redirection(args, &saved_stdin, &saved_stdout);
         int status = execute_command(args, background);
+        restore_redirection(saved_stdin, saved_stdout);
         return status; // Return the status of the command execution
     }
     return 0; // Default return success
@@ -496,10 +508,23 @@ int main() {
     add_pid_to_file(my_pid);
 
     for (;;) {
+        if (stop) {
+            printf("\nStopping minibash.\n");
+            break;
+        }
+
         printf("minibash$ ");
+        fflush(stdout);
+        
         if (fgets(command, MAX_COMMAND_LENGTH, stdin) == NULL) {
-            perror("fgets failed");
-            continue;
+            if (feof(stdin)) {
+                clearerr(stdin); // Clear EOF flag to continue reading
+                printf("\n");
+                continue;
+            } else {
+                perror("fgets failed");
+                continue;
+            }
         }
 
         command[strcspn(command, "\n")] = 0;  // Remove the newline character
@@ -543,7 +568,13 @@ int main() {
         } else if (strchr(command, '|') != NULL) {
             handle_pipe_command(command);
         } else if (strchr(command, '>') != NULL || strchr(command, '<') != NULL) {
-            handle_redirection(command);
+            char *args[MAX_ARG_COUNT];
+            int argc;
+            split_command(command, args, &argc);
+            int saved_stdin, saved_stdout;
+            handle_redirection(args, &saved_stdin, &saved_stdout);
+            execute_command(args, 0);
+            restore_redirection(saved_stdin, saved_stdout);
         } else if (strchr(command, ';') != NULL) {
             handle_sequential_command(command);
         } else if (strchr(command, '+') != NULL) {
@@ -552,33 +583,14 @@ int main() {
             handle_foreground_command();
         } else {
             // General command execution
-            pid_t pid = fork();
-
-            if (pid == -1) {
-                perror("fork failed");
-                continue;
-            } else if (pid == 0) {
-                // Tokenize the command into arguments
-                char *args[MAX_TOKENS];
-                int argc = 0;
-                char *arg_token = strtok(command, " ");
-                while (arg_token != NULL && argc < MAX_TOKENS) {
-                    args[argc++] = arg_token;
-                    arg_token = strtok(NULL, " ");
-                }
-                args[argc] = NULL;
-
-                if (execvp(args[0], args) == -1) {
-                    perror("execvp failed");
-                }
-                exit(EXIT_FAILURE);
-            } else {
-                // Parent process waits for the child to complete
-                int status;
-                waitpid(pid, &status, 0);
-            }
+            char *args[MAX_ARG_COUNT];
+            int argc;
+            split_command(command, args, &argc);
+            execute_command(args, 0);
         }
     }
 
+    // Remove the current PID from the PID file before exiting
+    remove_pid_from_file(my_pid);
     return 0;
 }
