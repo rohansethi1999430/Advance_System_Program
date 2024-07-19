@@ -583,7 +583,7 @@ int main() {
                     // If execlp fails
                     perror("execlp failed");
                     exit(EXIT_FAILURE);
-                } else {
+                } else  if(pid >0){
                     // Parent process
                     // Wait for the child process to complete
                     int status;

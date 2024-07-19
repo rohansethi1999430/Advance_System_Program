@@ -1,0 +1,50 @@
+#!/bin/bash
+
+# Function to print usage
+print_usage() {
+    echo "Usage: $0 <directory> [extension]"
+}
+
+# Function to check if directory is provided
+check_directory_provided() {
+    local DIRECTORY="$1"
+    if [ -z "$DIRECTORY" ]; then
+        print_usage
+        exit 1
+    fi
+}
+
+# Function to count all files in the directory
+count_all_files() {
+    local DIRECTORY="$1"
+    find "$DIRECTORY" -type f | wc -l
+}
+
+# Function to count files with the given extension in the directory
+count_files_with_extension() {
+    local DIRECTORY="$1"
+    local EXTENSION="$2"
+    find "$DIRECTORY" -type f -name "*$EXTENSION" | wc -l
+}
+
+# Function to count files in a directory based on the extension
+count_files() {
+    local DIRECTORY="$1"
+    local EXTENSION="$2"
+
+    check_directory_provided "$DIRECTORY"
+
+    # Check if extension is provided
+    if [ -z "$EXTENSION" ]; then
+        # Count all files in the directory
+        FILE_COUNT=$(count_all_files "$DIRECTORY")
+    else
+        # Count files with the given extension in the directory
+        FILE_COUNT=$(count_files_with_extension "$DIRECTORY" "$EXTENSION")
+    fi
+
+    echo "Total number of files${EXTENSION:+ with extension $EXTENSION} in $DIRECTORY: $FILE_COUNT"
+}
+
+# Call the function with provided arguments
+count_files "$1" "$2"

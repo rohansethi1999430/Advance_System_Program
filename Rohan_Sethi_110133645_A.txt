@@ -1,0 +1,42 @@
+#!/bin/bash
+
+FILE="comp8567.txt"
+
+# Function to check if the file exists
+file_exists() {
+    [ -e "$FILE" ]
+}
+
+# Function to check if the user is the owner of the file
+is_owner() {
+    [ "$(stat -c %U "$FILE")" = "$USER" ]
+}
+
+# Function to check if the file is writable
+is_writable() {
+    [ -w "$FILE" ]
+}
+
+# Main logic
+check_file_conditions() {
+    if ! file_exists; then
+        echo "The file does not exist."
+        exit 1
+    fi
+
+    if ! is_owner; then
+        echo "You are not the owner of the file."
+        exit 1
+    fi
+
+    if ! is_writable; then
+        echo "The file exists but does not have write permission. Setting write permission now."
+        chmod u+w "$FILE"
+    fi
+}
+
+# Call the function to check file conditions
+check_file_conditions
+
+# Append text to the file
+echo "Welcome to COMP 8567, Summer 2024" >> "$FILE"
