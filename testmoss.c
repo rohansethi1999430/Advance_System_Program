@@ -6,13 +6,27 @@
 #include <fcntl.h>
 #include <signal.h>
 
-
 // Global variable to manage the background process
 pid_t last_bg_pid = -1; // PID of the last background process
+
+// Function declarations
+void handle_command(char *input);
+void handle_pipe(char *input);
+void handle_sequence(char *input);
+void handle_conditional(char *input);
+void count_words(char *filename);
+void concat_files(char *input);
+void execute_command(char **args, int background);
+void bring_to_foreground();
+void redirect_io(char **args);
+void handle_error(const char *message);
+void run_child_process(char **args, int background);
+void run_parent_process(pid_t pid, int background);
 
 
 // Process the command by identifying its type and handle accordingly
 void handle_command(char *input) {
+    // Check for various special characters in the input to determine command type
     char *pipe_check = strchr(input, '|');
     char *seq_check = strchr(input, ';');
     char *and_check = strstr(input, "&&");
@@ -23,56 +37,56 @@ void handle_command(char *input) {
 
     // Determine the type of command based on special characters
     int command_type = 0;
-    if (pipe_check) command_type = 1;
+    if (and_check || or_check) command_type = 3;
     else if (seq_check) command_type = 2;
-    else if (and_check || or_check) command_type = 3;
+    else if (pipe_check) command_type = 1;
     else if (word_count_check && input[0] == '#') command_type = 4;
     else if (concat_check) command_type = 5;
     else if (background_check) command_type = 6;
 
+    // Handle the command based on its type
     switch (command_type) {
         case 1:
-            handle_pipe(input);
+            handle_pipe(input); // Handle piped commands
             break;
         case 2:
-            handle_sequence(input);
+            handle_sequence(input); // Handle sequential commands
             break;
         case 3:
-            handle_conditional(input);
+            handle_conditional(input); // Handle conditional commands
             break;
         case 4:
-            count_words(input + 1);
+            count_words(input + 1); // Handle word count command
             break;
         case 5:
-            concat_files(input);
+            concat_files(input); // Handle file concatenation command
             break;
         case 6: {
-            // Extract command and arguments using a different approach
+            // Extract command and arguments for background execution
             char *args[5] = { NULL };
             char *token = strtok(input, "+");
             int count = 0;
 
             if (token != NULL) {
                 char *cmd_token = strtok(token, " ");
-                while (cmd_token != NULL && count < 4) {
-                    args[count++] = cmd_token;
+                for (count = 0; cmd_token != NULL && count < 4; count++) {
+                    args[count] = cmd_token;
                     cmd_token = strtok(NULL, " ");
                 }
             }
-
             if (count > 0) {
                 execute_command(args, 1); // Execute in background
             }
             break;
         }
         default: {
-            // Handle regular commands with a different token extraction method
+            // Handle regular commands
             char *args[5] = { NULL };
             char *token = strtok(input, " ");
             int count = 0;
 
-            while (token != NULL && count < 4) {
-                args[count++] = token;
+            for (count = 0; token != NULL && count < 4; count++) {
+                args[count] = token;
                 token = strtok(NULL, " ");
             }
 
@@ -84,50 +98,69 @@ void handle_command(char *input) {
     }
 }
 
+// Function to handle errors and exit
+void handle_error(const char *message) {
+    perror(message); // Print error message to stderr
+    exit(EXIT_FAILURE); // Exit the program with failure status
+}
 
-// Execute a command with optional background execution
+// Function to execute a command in a child process
+void run_child_process(char **args, int background) {
+    redirect_io(args); // Handle any I/O redirection
+
+    // Set the process group ID for background processes
+    if (background) {
+        setpgid(0, 0); // Set child process group ID to its own PID
+    }
+
+    execvp(args[0], args); // Execute the command
+    handle_error("Command execution failed"); // Print error if execvp fails
+}
+
+// Function to handle the parent process behavior
+void run_parent_process(pid_t pid, int background) {
+    if (!background) {
+        // Wait for child process to finish if not running in background
+        waitpid(pid, NULL, 0);
+    } else {
+        last_bg_pid = pid; // Store the background process PID
+        printf("Background process started with PID: %d\n", pid);
+    }
+}
+
+// Function to create a new process and execute a command
 void execute_command(char **args, int background) {
     pid_t pid = fork(); // Create a child process
 
     if (pid < 0) {
         // Error occurred during fork
-        perror("Failed to create process");
+        handle_error("Failed to create process");
     } else if (pid == 0) {
         // Child process executes this block
-        redirect_io(args); // Handle any I/O redirection
-
-        // Set the process group ID for background processes
-        if (background) {
-            setpgid(0, 0); // Set child process group ID to its own PID
-        }
-
-        execvp(args[0], args); // Execute the command
-        perror("Command execution failed"); // Print error if execvp fails
-        exit(EXIT_FAILURE); // Exit if execvp fails
+        run_child_process(args, background);
     } else {
         // Parent process executes this block
-        if (!background) {
-            // Wait for child process to finish if not running in background
-            waitpid(pid, NULL, 0);
-        } else {
-            last_bg_pid = pid; // Store the background process PID
-            printf("Background process started with PID: %d\n", pid);
-        }
+        run_parent_process(pid, background);
     }
 }
 
-// Bring the last background process to the foreground
+// Function to bring the last background process to the foreground
 void bring_to_foreground() {
-    if (last_bg_pid > 0) {
-        printf("Moving process %d to foreground\n", last_bg_pid);
-        tcsetpgrp(STDIN_FILENO, last_bg_pid); // Set foreground process group for terminal
-        kill(last_bg_pid, SIGCONT); // Continue the background process if it was stopped
-        waitpid(last_bg_pid, NULL, WUNTRACED); // Wait for the background process to finish
-        tcsetpgrp(STDIN_FILENO, getpid()); // Restore terminal control to the shell
-        last_bg_pid = -1; // Reset the background PID
-    } else {
-        printf("No background process to move to foreground\n");
-    }
+    // Ternary operator used to decide the action based on whether last_bg_pid > 0
+    last_bg_pid > 0 ?
+        (
+            // If there's a background process, move it to foreground
+            printf("Moving process %d to foreground\n", last_bg_pid),
+            tcsetpgrp(STDIN_FILENO, last_bg_pid),   // Set foreground process group for terminal
+            kill(last_bg_pid, SIGCONT),            // Continue the background process if it was stopped
+            waitpid(last_bg_pid, NULL, WUNTRACED), // Wait for the background process to finish
+            tcsetpgrp(STDIN_FILENO, getpid()),     // Restore terminal control to the shell
+            last_bg_pid = -1                       // Reset the background PID
+        ) :
+        (
+            // If there's no background process to bring to foreground, print a message
+            printf("No background process to move to foreground\n")
+        );
 }
 
 // Handle input/output redirection
@@ -267,6 +300,7 @@ void handle_pipe(char *input) {
     }
 }
 
+// Handle commands separated by semicolons
 void handle_sequence(char *input) {
     char *commands[5]; // Assuming max 5 commands
     int cmd_index = 0;
@@ -275,7 +309,7 @@ void handle_sequence(char *input) {
     char *cmd_end;
 
     // Split commands based on ';'
-    while ((cmd_end = strchr(cmd_start, ';')) != NULL) {
+    for (cmd_end = strchr(cmd_start, ';'); cmd_end != NULL; cmd_end = strchr(cmd_start, ';')) {
         *cmd_end = '\0'; // Replace ';' with null terminator
         commands[cmd_index++] = cmd_start;
         cmd_start = cmd_end + 1; // Move to next command
@@ -286,13 +320,14 @@ void handle_sequence(char *input) {
     for (int i = 0; i < cmd_index; i++) {
         char *cmd = commands[i];
 
-        // Trim leading and trailing spaces
-        while (*cmd == ' ') {
-            cmd++;
-        }
+        // Trim leading spaces
+        while (*cmd == ' ') cmd++;
+        
+        // Trim trailing spaces
         char *end = cmd + strlen(cmd) - 1;
         while (end > cmd && *end == ' ') {
-            *end-- = '\0';
+            *end = '\0';
+            end--;
         }
 
         if (strlen(cmd) > 0) {
@@ -309,7 +344,7 @@ void handle_sequence(char *input) {
 
             // Execute the command
             if (arg_index > 0) {
-                execute_command(args, 0); // Assuming not running in background
+                execute_command(args, 0); // Execute in foreground
             }
         }
     }
@@ -317,56 +352,74 @@ void handle_sequence(char *input) {
 
 // Handle conditional commands with '&&' and '||'
 void handle_conditional(char *input) {
-    // Split the input based on '&&' and '||' characters
-    char *commands[5];
+    char *commands[5]; // Assuming max 5 commands
     char *delims = "&&||";
-    char *token = strtok(input, delims);
     int count = 0;
+    int prev_success = 1; // Track the success of the previous command
 
-    // Extract individual commands
-    while (token != NULL && count < 4) {
-        commands[count++] = token;
-        token = strtok(NULL, delims);
+    // Extract individual commands based on '&&' and '||'
+    char *start = input;
+    while (*start) {
+        char *end = strpbrk(start, delims);
+        if (end) {
+            if (*(end+1) == '&' || *(end+1) == '|') {
+                *end = '\0';
+                commands[count++] = start;
+                start = end + 2; // Move past the logical operator
+            } else {
+                start++;
+            }
+        } else {
+            commands[count++] = start;
+            break;
+        }
     }
 
-    int prev_success = 1; // Track the success of the previous command
     for (int i = 0; i < count; i++) {
-        // Skip commands based on the success of the previous command and logical operator
-        if ((i > 0 && strstr(input, "&&") && !prev_success) ||
-            (i > 0 && strstr(input, "||") && prev_success)) {
-            continue;
+        // Determine the logical operator before the command
+        int execute = 1;
+        if (i > 0) {
+            char *op = commands[i - 1] + strlen(commands[i - 1]) + 1;
+            if (*op == '&') {
+                execute = prev_success;
+            } else if (*op == '|') {
+                execute = !prev_success;
+            }
         }
 
-        pid_t pid = fork(); // Create a child process
+        if (execute) {
+            pid_t pid = fork(); // Create a child process
 
-        if (pid < 0) {
-            perror("Failed to create process");
-            exit(EXIT_FAILURE);
-        } else if (pid == 0) {
-            // Child process executes this block
-            char *args[5];
-            char *cmd_token = strtok(commands[i], " ");
-            int cmd_count = 0;
+            if (pid < 0) {
+                perror("Failed to create process");
+                exit(EXIT_FAILURE);
+            } else if (pid == 0) {
+                // Child process executes this block
+                char *args[5];
+                char *cmd_token = strtok(commands[i], " ");
+                int cmd_count = 0;
 
-            // Extract command and arguments
-            while (cmd_token != NULL && cmd_count < 4) {
-                args[cmd_count++] = cmd_token;
-                cmd_token = strtok(NULL, " ");
+                // Extract command and arguments
+                while (cmd_token != NULL && cmd_count < 4) {
+                    args[cmd_count++] = cmd_token;
+                    cmd_token = strtok(NULL, " ");
+                }
+
+                args[cmd_count] = NULL;
+                execvp(args[0], args); // Execute the command
+                perror("Failed to execute command");
+                exit(EXIT_FAILURE); // Exit if execvp fails
+            } else {
+                // Parent process executes this block
+                int status;
+                waitpid(pid, &status, 0); // Wait for child process to finish
+                prev_success = WIFEXITED(status) && WEXITSTATUS(status) == 0; // Update success status
             }
-
-            args[cmd_count] = NULL;
-            execvp(args[0], args); // Execute the command
-            perror("Failed to execute command");
-            exit(EXIT_FAILURE); // Exit if execvp fails
-        } else {
-            // Parent process executes this block
-            int status;
-            waitpid(pid, &status, 0); // Wait for child process to finish
-            prev_success = WIFEXITED(status) && WEXITSTATUS(status) == 0; // Update success status
         }
     }
 }
 
+// Count the number of words in a file
 void count_words(char *filename) {
     // Trim leading spaces from filename
     while (*filename == ' ') {
@@ -396,6 +449,7 @@ void count_words(char *filename) {
     printf("Total words in file: %d\n", words);
 }
 
+// Concatenate contents of multiple files and display
 void concat_files(char *input) {
     // Split the input based on the '~' character
     char *files[5];
@@ -439,19 +493,23 @@ void concat_files(char *input) {
     // Reset the position in the temporary file to the beginning
     rewind(temp_file);
 
+    // Display the concatenated content from the temporary
     // Display the concatenated content from the temporary file
     char display_buffer[1024];
     while (fgets(display_buffer, sizeof(display_buffer), temp_file)) {
-        fputs(display_buffer, stdout);
+        fputs(display_buffer, stdout); // Print the content to the console
     }
 
     // Close and delete the temporary file
     fclose(temp_file);
 }
 
+// Example program to handle user commands in a custom shell
 int main() {
+
     char input[1024];
 
+    // Infinite loop to continuously prompt user for commands
     while (1) {
         // Display command prompt
         printf("minibash$ ");
@@ -467,18 +525,17 @@ int main() {
 
         // Check for the exit command 'dter'
         if (strcmp(input, "dter") == 0) {
-            break;
+            break; // Exit the loop and end the program
         }
 
-        // Check for the 'fore' command
+        // Check for the 'fore' command to bring background process to foreground
         if (strcmp(input, "fore") == 0) {
-            bring_to_foreground();
-            continue;
+            bring_to_foreground(); // Bring the last background process to the foreground
+            continue; // Continue to the next iteration of the loop
         }
 
         // Process the user input
         handle_command(input);
     }
-
     return 0;
 }

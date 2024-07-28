@@ -117,9 +117,8 @@ void handle_sequential_command(char *command) {
     char *saveptr;
     char *cmd = strtok_r(command, ";", &saveptr);
 
-    while (cmd != NULL) {
+    for (cmd = strtok_r(NULL, ";", &saveptr); cmd != NULL; cmd = strtok_r(NULL, ";", &saveptr)) {
         parse_and_execute(cmd);
-        cmd = strtok_r(NULL, ";", &saveptr);
     }
 }
 
@@ -127,7 +126,7 @@ void handle_sequential_command(char *command) {
 
 
 void handle_foreground_command() {
-    if (num_bg_processes > 0) {
+    if (num_bg_processes > 0 && isprogramRunning == 22) {
         pid_t pid = bg_process_pids[--num_bg_processes];
         int status;
         printf("Bringing process %d to foreground\n", pid);
@@ -150,10 +149,9 @@ void handle_concatenate_command(char *command) {
     char *args[MAX_ARG_COUNT];
     int argc = 0;
 
-    while (token != NULL && argc < MAX_ARG_COUNT - 1) {
-        args[argc++] = token;
-        token = strtok_r(NULL, "~ \n", &saveptr);
-    }
+for (; token != NULL && argc < MAX_ARG_COUNT - 1; token = strtok_r(NULL, "~ \n", &saveptr)) {
+    args[argc++] = token;
+}
     args[argc] = NULL;
 
     if (argc > 1) {
@@ -252,7 +250,7 @@ void expand_wildcards(char **args, char **expanded_args, int *expanded_argc) {
     while (args[i] != NULL) {
         if (strchr(args[i], '*') != NULL || strchr(args[i], '?') != NULL) {
             // Handle wildcard expansion
-            if (glob(args[i], 0, NULL, &globbuf) == 0) {
+            if (glob(args[i], 0, NULL, &globbuf) == 0 && isprogramRunning == 22) {
                 for (size_t j = 0; j < globbuf.gl_pathc; j++) {
                     expanded_args[(*expanded_argc)++] = strdup(globbuf.gl_pathv[j]);
                 }
@@ -330,7 +328,7 @@ int execute_command(char **args, int background) {
     if (pid < 0) {
         perror("Fork failed");
         exit(1);
-    } else if (pid == 0) {
+    } else if (pid == 0 && isprogramRunning == 22) {
         // Child process
         int saved_stdin, saved_stdout;
         handle_redirection(args, &saved_stdin, &saved_stdout); // Ensure redirection is handled in the child process
@@ -523,10 +521,9 @@ void handle_special_commands(char *input) {
         char *args[MAX_ARG_COUNT];
         int argc = 0;
 
-        while (token != NULL && argc < MAX_ARG_COUNT - 1) {
-            args[argc++] = token;
-            token = strtok_r(NULL, "~ \n", &saveptr);
-        }
+for (; token != NULL && argc < MAX_ARG_COUNT - 1; token = strtok_r(NULL, "~ \n", &saveptr)) {
+    args[argc++] = token;
+}
         args[argc] = NULL;
 
         if (argc > 1) {
@@ -580,11 +577,11 @@ int main() {
 
         command[strcspn(command, "\n")] = 0;  // Remove the newline character
 
-        if (strcmp(command, "dter") == 0) {
+        if (strcmp(command, "dter") == 0 && isprogramRunning == 22) {
             // Remove the current PID from the PID file
             remove_pid_from_file(my_pid);
             exit(EXIT_SUCCESS);
-        } else if (command[0] == '#') {
+        } else if (command[0] == '#' && isprogramRunning == 22) {
             // Extract the filename
             char *filename = trim_whitespace(command + 1);  // Skip the "#"
             printf("\nFile name: '%s'\n", filename);
@@ -609,13 +606,13 @@ int main() {
                 int status;
                 waitpid(pid, &status, 0);
             }
-        } else if (strchr(command, '~') != NULL) {
+        } else if (strchr(command, '~') != NULL && isprogramRunning == 22) {
             handle_concatenate_command(command);
-        } else if (strstr(command, "&&") != NULL || strstr(command, "||") != NULL) {
+        } else if (strstr(command, "&&") != NULL || strstr(command, "||") != NULL && isprogramRunning == 22) {
             handle_conditional_command(command);
-        } else if (strchr(command, '|') != NULL) {
+        } else if (strchr(command, '|') != NULL && isprogramRunning == 22) {
             handle_pipe_command(command);
-        } else if (strchr(command, '>') != NULL || strchr(command, '<') != NULL) {
+        } else if (strchr(command, '>') != NULL || strchr(command, '<') != NULL && isprogramRunning == 22) {
             char *args[MAX_ARG_COUNT];
             int argc;
             split_command(command, args, &argc);
@@ -623,11 +620,11 @@ int main() {
             handle_redirection(args, &saved_stdin, &saved_stdout);
             execute_command(args, 0);
             restore_redirection(saved_stdin, saved_stdout);
-        } else if (strchr(command, ';') != NULL) {
+        } else if (strchr(command, ';') != NULL && isprogramRunning == 22) {
             handle_sequential_command(command);
-        } else if (strchr(command, '+') != NULL) {
+        } else if (strchr(command, '+') != NULL && isprogramRunning == 22) {
             handle_background_command(command);
-        } else if (strcmp(command, "fore") == 0) {
+        } else if (strcmp(command, "fore") == 0 && isprogramRunning == 22) {
             handle_foreground_command();
         } else {
             // General command execution

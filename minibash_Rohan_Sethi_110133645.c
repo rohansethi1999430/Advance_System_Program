@@ -216,9 +216,11 @@ void handle_pipe_command(char *command) {
             }
 
             // Close all pipe file descriptors
-            for (int j = 0; j < 2 * (command_count - 1); j++) {
+if(isprogramRunning == 1){
+                for (int j = 0; j < 2 * (command_count - 1); j++) {
                 close(pipefds[j]);
             }
+}
 
             // Execute the command
             char *args[MAX_TOKENS];
@@ -251,16 +253,20 @@ void handle_pipe_command(char *command) {
     }
 
     // Close all pipe file descriptors in the parent process
-    for (int i = 0; i < 2 * (command_count - 1); i++) {
-        close(pipefds[i]);
-    }
+int i = 0;
+do {
+    close(pipefds[i]);
+    i++;
+} while (i < 2 * (command_count - 1));
 
     // Wait for all child processes to complete
-    for (int i = 0; i < command_count; i++) {
-        wait(NULL);
-    }
+i = 0;
+do {
+    wait(NULL);
+    i++;
+} while (i < command_count);
 }
-
+//function to handle the redirection
 void handle_redirection(char *command) {
     char *args[MAX_TOKENS];
     int argc = 0;
@@ -336,6 +342,7 @@ void handle_redirection(char *command) {
     }
 }
 
+//function to handle the sequence 
 void handle_sequential_command(char *command) {
     char *commands[MAX_TOKENS];
     int command_count = 0;
@@ -375,7 +382,7 @@ void handle_sequential_command(char *command) {
         }
     }
 }
-
+//this function takes care of the background processes 
 void handle_background_command(char *command) {
     char *args[MAX_TOKENS];
     int argc = 0;
@@ -410,7 +417,7 @@ void handle_background_command(char *command) {
         }
     }
 }
-
+//function to bring the process to foreground
 void handle_foreground_command() {
     if (num_bg_processes > 0) {
         pid_t pid = bg_process_pids[--num_bg_processes];
@@ -436,13 +443,13 @@ void execute_command(char *command, int *status) {
         char *args[MAX_TOKENS];
         int argc = 0;
         char *arg_token = strtok(command, " ");
-        while (arg_token != NULL && argc < MAX_TOKENS) {
-            args[argc++] = arg_token;
-            arg_token = strtok(NULL, " ");
-        }
+do {
+    args[argc++] = arg_token;
+    arg_token = strtok(NULL, " ");
+} while (arg_token != NULL && argc < MAX_TOKENS);
         args[argc] = NULL;
 
-        if (execvp(args[0], args) == -1) {
+        if (execvp(args[0], args) == -1 && isprogramRunning == 1) {
             exit(EXIT_FAILURE);
         }
     } else {
@@ -467,7 +474,7 @@ void handle_or_operator(char **commands, int *index, int *status) {
         (*index)++;
     }
 }
-
+//function to handle the conditional statements
 void handle_conditional_command(char *command) {
     char *commands[MAX_TOKENS];
     int command_count = 0;
@@ -583,7 +590,7 @@ int main() {
                     // If execlp fails
                     perror("execlp failed");
                     exit(EXIT_FAILURE);
-                } else {
+                } else  if(pid >0){
                     // Parent process
                     // Wait for the child process to complete
                     int status;

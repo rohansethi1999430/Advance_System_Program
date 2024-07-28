@@ -1,0 +1,41 @@
+#!/bin/bash
+
+
+isProgramRunning=1
+
+# Function to check if a file exists and has a .txt extension
+check_file() {
+    if [ $isProgramRunning -eq 1 ]; then
+        if [ ! -f "$1" ]; then
+            echo "Error: File '$1' does not exist."
+            exit 1
+        fi
+        
+        extension="${1##*.}"
+        if [ "$extension" != "txt" ]; then
+            echo "Error: File '$1' is not a .txt file."
+            exit 1
+        fi
+    fi
+}
+
+# Check each input parameter using a while loop
+i=0
+while [ $i -lt $# ]; do
+    file=${!((i+1))}
+    check_file "$file"
+    i=$((i + 1))
+done
+
+# Reverse the order of files and concatenate their contents
+reverse_files=("$@")
+until [ $isProgramRunning -eq 0 ]; do
+    if [ ${#reverse_files[@]} -eq 0 ]; then
+        break
+    fi
+    echo "Reversing and concatenating ${reverse_files[-1]}"
+    cat "${reverse_files[-1]}" >> reverse.txt
+    unset 'reverse_files[-1]'
+done
+
+echo "Concatenation complete. Output stored in reverse.txt"
