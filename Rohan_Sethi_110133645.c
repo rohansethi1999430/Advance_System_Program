@@ -1,87 +1,78 @@
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
 #include <unistd.h>
 
-#define NUM_THREADS 3
-
+#define NUM_THREADS 10
+int isProgrammRunning = 1;
+int num = 120;
 pthread_mutex_t lock;
-pthread_cond_t cond;
-int turn = 1;
 
-void *func1(void *arg) {
-    char *msg = (char *)arg;
-
+void decrement_num(int decrement_value, const char* thread_type, pthread_t thread_id) {
     pthread_mutex_lock(&lock);
-    while (turn != 1) {
-        pthread_cond_wait(&cond, &lock);
-    }
-    printf("Thread 1: %s\n", msg);
-    printf("Thread 1 ID: %ld\n", pthread_self());
-    turn = 2;
-    pthread_cond_broadcast(&cond);
+    num -= decrement_value;
+    printf("Thread ID: %ld (%s) - num: %d\n", thread_id, thread_type, num);
     pthread_mutex_unlock(&lock);
+}
 
+void* decrement_detached(void* arg) {
+    pthread_t thread_id = pthread_self();
+    decrement_num(4, "Detached", thread_id);
     pthread_exit(NULL);
 }
 
-void *func2(void *arg) {
-    char *msg = (char *)arg;
-
-    pthread_mutex_lock(&lock);
-    while (turn != 3) {
-        pthread_cond_wait(&cond, &lock);
-    }
-    printf("Thread 2: %s\n", msg);
-    printf("Thread 2 ID: %ld\n", pthread_self());
-    turn = 4;
-    pthread_cond_broadcast(&cond);
-    pthread_mutex_unlock(&lock);
-
+void* decrement_joinable(void* arg) {
+    pthread_t thread_id = pthread_self();
+    decrement_num(3, "Joinable", thread_id);
     pthread_exit(NULL);
 }
 
-void *func3(void *arg) {
-    char *msg = (char *)arg;
+void initialize_thread_attributes(pthread_attr_t* attr, int detach_state) {
+    pthread_attr_init(attr);
+    pthread_attr_setdetachstate(attr, detach_state);
+}
 
-    pthread_mutex_lock(&lock);
-    while (turn != 2) {
-        pthread_cond_wait(&cond, &lock);
+void create_thread(pthread_t* thread, pthread_attr_t* attr, void* (*decrement_func)(void*), int detach_state) {
+    initialize_thread_attributes(attr, detach_state);
+    pthread_create(thread, attr, decrement_func, NULL);
+    pthread_attr_destroy(attr);
+}
+
+void create_threads(int i, pthread_t threads[], pthread_attr_t attrs[], void* (*decrement[])(void*)) {
+    if (i >= NUM_THREADS && isProgrammRunning==1) {
+        return;
     }
-    printf("Thread 3: %s\n", msg);
-    printf("Thread 3 ID: %ld\n", pthread_self());
-    turn = 3;
-    pthread_cond_broadcast(&cond);
-    pthread_mutex_unlock(&lock);
 
-    pthread_exit(NULL);
+    int detach_state = (i % 2 == 0) ? PTHREAD_CREATE_JOINABLE : PTHREAD_CREATE_DETACHED;
+    create_thread(&threads[i], &attrs[i], decrement[i % 2], detach_state);
+    create_threads(i + 1, threads, attrs, decrement);
+}
+
+void join_thread(pthread_t thread) {
+    pthread_join(thread, NULL);
+}
+
+void join_threads(int i, pthread_t threads[]) {
+    if (i >= NUM_THREADS && isProgrammRunning==1) {
+        return;
+    }
+
+    (i % 2 == 0) ? join_thread(threads[i]) : (void)0;
+    join_threads(i + 1, threads);
 }
 
 int main() {
     pthread_t threads[NUM_THREADS];
-    char *msg = "Welcome to Threads-COMP 8567";
-    int i;
-
-    // Array of function pointers
-    void* (*funcs[NUM_THREADS])(void *) = {func1, func2, func3};
+    pthread_attr_t attrs[NUM_THREADS];
+    void* (*decrement[])(void*) = {decrement_joinable, decrement_detached};
 
     pthread_mutex_init(&lock, NULL);
-    pthread_cond_init(&cond, NULL);
 
-    // Create all threads using a for loop
-    for (i = 0; i < NUM_THREADS; i++) {
-        pthread_create(&threads[i], NULL, funcs[i], (void *)msg);
-    }
-
-    // Use a for loop to join all threads
-    for (i = 0; i < NUM_THREADS; i++) {
-        pthread_join(threads[i], NULL);
-    }
-
-    printf("Main thread ID: %ld\n", pthread_self());
+    create_threads(0, threads, attrs, decrement);
+    join_threads(0, threads);
 
     pthread_mutex_destroy(&lock);
-    pthread_cond_destroy(&cond);
 
-    return 0;
+    printf("Final value of num: %d\n", num);
+    pthread_exit(NULL);
 }
