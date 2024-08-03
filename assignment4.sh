@@ -127,17 +127,17 @@ while true; do
     perform_complete_backup
     touch /tmp/last_backup
     touch /tmp/last_diff_backup
-    sleep 20  # Sleep for 2 minutes
+    sleep 120  # Sleep for 2 minutes
 
     perform_incremental_backup
-    sleep 20  # Sleep for 2 minutes
+    sleep 120  # Sleep for 2 minutes
 
     perform_incremental_backup
-    sleep 20  # Sleep for 2 minutes
+    sleep 120  # Sleep for 2 minutes
 
     perform_differential_backup
-    sleep 20  # Sleep for 2 minutes
+    sleep 120  # Sleep for 2 minutes
 
     perform_incremental_backup
-    sleep 20  # Sleep for 2 minutes
+    sleep 120  # Sleep for 2 minutes
 done
