@@ -16,10 +16,10 @@ perform_complete_backup() {
     FIND_FILE_TYPES="\( $file_types \)"
     FIND_PRINT0="-print0"
 
-    log_message "User Home: $FIND_USER_HOME"
-    log_message "Type: $FIND_TYPE"
-    log_message "File Types: $FIND_FILE_TYPES"
-    log_message "Print0: $FIND_PRINT0"
+    # log_message "User Home: $FIND_USER_HOME"
+    # log_message "Type: $FIND_TYPE"
+    # log_message "File Types: $FIND_FILE_TYPES"
+    # log_message "Print0: $FIND_PRINT0"
 
     FIND_COMMAND="find $FIND_USER_HOME $FIND_TYPE $FIND_FILE_TYPES $FIND_PRINT0"
     log_message "Executing: $FIND_COMMAND"
@@ -48,11 +48,11 @@ perform_incremental_backup() {
     FIND_NEWER="-newer /tmp/last_backup"
     FIND_PRINT0="-print0"
 
-    log_message "User Home: $FIND_USER_HOME"
-    log_message "Type: $FIND_TYPE"
-    log_message "File Types: $FIND_FILE_TYPES"
-    log_message "Newer Than: $FIND_NEWER"
-    log_message "Print0: $FIND_PRINT0"
+    # log_message "User Home: $FIND_USER_HOME"
+    # log_message "Type: $FIND_TYPE"
+    # log_message "File Types: $FIND_FILE_TYPES"
+    # log_message "Newer Than: $FIND_NEWER"
+    # log_message "Print0: $FIND_PRINT0"
 
     FIND_COMMAND="find $FIND_USER_HOME $FIND_TYPE $FIND_FILE_TYPES $FIND_NEWER $FIND_PRINT0"
     log_message "Executing: $FIND_COMMAND"
@@ -81,11 +81,11 @@ perform_differential_backup() {
     FIND_NEWER="-newer /tmp/last_diff_backup"
     FIND_PRINT0="-print0"
 
-    log_message "User Home: $FIND_USER_HOME"
-    log_message "Type: $FIND_TYPE"
-    log_message "File Types: $FIND_FILE_TYPES"
-    log_message "Newer Than: $FIND_NEWER"
-    log_message "Print0: $FIND_PRINT0"
+    # log_message "User Home: $FIND_USER_HOME"
+    # log_message "Type: $FIND_TYPE"
+    # log_message "File Types: $FIND_FILE_TYPES"
+    # log_message "Newer Than: $FIND_NEWER"
+    # log_message "Print0: $FIND_PRINT0"
 
     FIND_COMMAND="find $FIND_USER_HOME $FIND_TYPE $FIND_FILE_TYPES $FIND_NEWER $FIND_PRINT0"
     log_message "Executing: $FIND_COMMAND"
